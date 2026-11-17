@@ -45,6 +45,13 @@ def initialize_database() -> None:
               matches_json TEXT NOT NULL
             )
         ''')
+        database.execute('''
+            CREATE TABLE IF NOT EXISTS consents (
+              person_id TEXT PRIMARY KEY,
+              approved INTEGER NOT NULL CHECK(approved IN (0, 1)),
+              updated_at TEXT NOT NULL
+            )
+        ''')
         photo_count = database.execute('SELECT COUNT(*) FROM photos').fetchone()[0]
         if photo_count == 0:
             for photo in SAMPLE_PHOTOS:
@@ -90,6 +97,20 @@ def reset_database() -> None:
                 'INSERT INTO photos (id, title, date, color, image_url, matches_json) VALUES (?, ?, ?, ?, ?, ?)',
                 (photo['id'], photo['title'], photo['date'], photo['color'], None, json.dumps(photo['matches'])),
             )
+
+def get_consent(person_id: str) -> bool:
+    with connection() as database:
+        row = database.execute('SELECT approved FROM consents WHERE person_id = ?', (person_id,)).fetchone()
+    return bool(row['approved']) if row else False
+
+def update_consent(person_id: str, approved: bool, updated_at: str) -> bool:
+    with connection() as database:
+        database.execute(
+            '''INSERT INTO consents (person_id, approved, updated_at) VALUES (?, ?, ?)
+               ON CONFLICT(person_id) DO UPDATE SET approved = excluded.approved, updated_at = excluded.updated_at''',
+            (person_id, approved, updated_at),
+        )
+    return approved
 
 def row_to_photo(row: sqlite3.Row) -> dict:
     return {

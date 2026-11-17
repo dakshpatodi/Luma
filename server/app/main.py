@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 from typing import Literal
+from datetime import datetime, timezone
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
-from .database import initialize_database, insert_photo, read_photos, reset_database, update_match
+from .database import get_consent, initialize_database, insert_photo, read_photos, reset_database, update_consent, update_match
 
 app = FastAPI(title='Luma API', version='0.1.0')
 app.add_middleware(
@@ -33,6 +34,9 @@ class PhotoPayload(BaseModel):
 class MatchUpdate(BaseModel):
     status: Literal['confirmed', 'review', 'rejected']
 
+class ConsentUpdate(BaseModel):
+    approved: bool
+
 @app.on_event('startup')
 def startup() -> None:
     initialize_database()
@@ -55,6 +59,15 @@ def change_match(photo_id: str, person_id: str, update: MatchUpdate) -> dict:
     if photo is None:
         raise HTTPException(status_code=404, detail='Photo not found')
     return photo
+
+@app.get('/api/consent/{person_id}')
+def read_consent(person_id: str) -> dict:
+    return {'personId': person_id, 'approved': get_consent(person_id)}
+
+@app.put('/api/consent/{person_id}')
+def save_consent(person_id: str, consent: ConsentUpdate) -> dict:
+    approved = update_consent(person_id, consent.approved, datetime.now(timezone.utc).isoformat())
+    return {'personId': person_id, 'approved': approved}
 
 @app.delete('/api/photos', status_code=204)
 def reset_photos() -> None:

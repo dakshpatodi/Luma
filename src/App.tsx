@@ -32,6 +32,7 @@ function App() {
   const [selectedPhotoId, setSelectedPhotoId] = useState<string | null>(null)
   const [toast, setToast] = useState('')
   const [backendStatus, setBackendStatus] = useState<'connecting' | 'connected' | 'offline'>('connecting')
+  const [consents, setConsents] = useState<Record<string, boolean>>({})
   const fileInput = useRef<HTMLInputElement>(null)
 
   const selectedPerson = people.find((person) => person.id === selectedPersonId) ?? people[0]
@@ -63,6 +64,14 @@ function App() {
       .catch(() => { if (!cancelled) setBackendStatus('offline') })
     return () => { cancelled = true }
   }, [])
+
+  useEffect(() => {
+    let cancelled = false
+    api.getConsent(selectedPersonId)
+      .then((consent) => { if (!cancelled) setConsents((current) => ({ ...current, [consent.personId]: consent.approved })) })
+      .catch(() => { if (!cancelled) setBackendStatus('offline') })
+    return () => { cancelled = true }
+  }, [selectedPersonId])
 
   useEffect(() => {
     if (!toast) return
@@ -108,6 +117,10 @@ function App() {
   }
 
   function reviewMatch(photoId: string, status: MatchStatus) {
+    if (!consents[selectedPerson.id]) {
+      setToast(`${selectedPerson.name} must consent before review decisions are saved.`)
+      return
+    }
     setPhotos((currentPhotos) => currentPhotos.map((photo) => {
       if (photo.id !== photoId) return photo
       return {
@@ -117,6 +130,18 @@ function App() {
     }))
     void api.updateMatch(photoId, selectedPerson.id, status).then(() => setBackendStatus('connected')).catch(() => { setBackendStatus('offline'); setToast('Review saved only in this browser. Start the API to save it to SQLite.') })
     setToast(status === 'confirmed' ? `Added to ${selectedPerson.name}'s photos.` : status === 'rejected' ? 'Removed from this person’s photos.' : 'Kept in the review queue.')
+  }
+
+  async function changeConsent(approved: boolean) {
+    try {
+      const consent = await api.updateConsent(selectedPerson.id, approved)
+      setConsents((current) => ({ ...current, [consent.personId]: consent.approved }))
+      setBackendStatus('connected')
+      setToast(approved ? `${selectedPerson.name}'s consent was recorded.` : `${selectedPerson.name}'s consent was withdrawn.`)
+    } catch {
+      setBackendStatus('offline')
+      setToast('Start the local API to record consent.')
+    }
   }
 
   async function resetLocalData() {
@@ -157,7 +182,7 @@ function App() {
 
       <section className="workspace">
         {view === 'library' && <LibraryView photos={visibleLibraryPhotos} totalPhotos={photos.length} selectedPhotoId={selectedPhotoId} selectedPersonId={libraryPersonId} searchTerm={searchTerm} onSelectPhoto={setSelectedPhotoId} onSelectPerson={setLibraryPersonId} />}
-        {view === 'find' && <FindView person={selectedPerson} findMatches={findMatches} reviewMatches={reviewMatches} onSelectPerson={setSelectedPersonId} onReview={reviewMatch} />}
+        {view === 'find' && <FindView person={selectedPerson} consented={Boolean(consents[selectedPerson.id])} findMatches={findMatches} reviewMatches={reviewMatches} onSelectPerson={setSelectedPersonId} onReview={reviewMatch} onConsentChange={(approved) => { void changeConsent(approved) }} />}
         {view === 'people' && <PeopleView photos={photos} onChoosePerson={(personId) => { setSelectedPersonId(personId); navigate('find') }} />}
         {view === 'privacy' && <PrivacyView photoCount={photos.length} backendStatus={backendStatus} onReset={() => { void resetLocalData() }} />}
       </section>
@@ -180,15 +205,17 @@ function LibraryView({ photos, totalPhotos, selectedPhotoId, selectedPersonId, s
   </>
 }
 
-function FindView({ person, findMatches, reviewMatches, onSelectPerson, onReview }: { person: Person; findMatches: Photo[]; reviewMatches: Photo[]; onSelectPerson: (personId: string) => void; onReview: (photoId: string, status: MatchStatus) => void }) {
+function FindView({ person, consented, findMatches, reviewMatches, onSelectPerson, onReview, onConsentChange }: { person: Person; consented: boolean; findMatches: Photo[]; reviewMatches: Photo[]; onSelectPerson: (personId: string) => void; onReview: (photoId: string, status: MatchStatus) => void; onConsentChange: (approved: boolean) => void }) {
   return <>
     <div className="page-heading"><div><p className="eyebrow">FIND MY PHOTOS</p><h1>Photos of {person.name}</h1><p>Confirmed matches are separate from uncertain candidates, so you stay in control.</p></div><PersonAvatar person={person} /></div>
     <div className="person-picker" aria-label="Choose a person">{people.map((item) => <button className={item.id === person.id ? 'person-option selected-person' : 'person-option'} type="button" key={item.id} onClick={() => onSelectPerson(item.id)}><PersonAvatar person={item} small /><span>{item.name}</span></button>)}</div>
+    {!consented && <section className="consent-card"><span>⌁</span><div><p className="eyebrow">CONSENT REQUIRED</p><h2>Enable {person.name}’s demo results?</h2><p>This local MVP uses sample labels only. A real product must record clear approval before biometric processing or face search.</p><button className="primary-button small-button" type="button" onClick={() => onConsentChange(true)}>I consent to demo matching</button></div></section>}
     <section className="match-summary"><div><span className="summary-number">{findMatches.length}</span><span>confirmed photos</span></div><div><span className="summary-number">{reviewMatches.length}</span><span>needs review</span></div><p>Matching is simulated in this local MVP. No face recognition runs on your images.</p></section>
     <h2 className="section-title">Confirmed photos</h2>
     {findMatches.length ? <div className="photo-grid">{findMatches.map((photo) => <PhotoCard photo={photo} key={photo.id} onClick={() => undefined} />)}</div> : <EmptyState title="No confirmed matches yet" text="Review possible matches or add tagged photos later." />}
     <h2 className="section-title review-title">Needs your review</h2>
-    {reviewMatches.length ? <div className="review-grid">{reviewMatches.map((photo) => <article className="review-card" key={photo.id}><div className="review-art"><PhotoArt photo={photo} /><span className="face-box" /></div><div className="review-copy"><p className="eyebrow">POSSIBLE MATCH · {Math.round(getConfidence(photo, person.id) * 100)}%</p><h3>Is this {person.name}?</h3><p>Confirming adds it to this person’s results. Rejecting removes the suggestion.</p><div className="review-actions"><button className="primary-button small-button" type="button" onClick={() => onReview(photo.id, 'confirmed')}>Yes, it’s me</button><button className="secondary-button" type="button" onClick={() => onReview(photo.id, 'rejected')}>Not me</button><button className="text-button" type="button" onClick={() => onReview(photo.id, 'review')}>Not sure</button></div></div></article>)}</div> : <EmptyState title="You’re all caught up" text="There are no uncertain candidates for this person." />}
+    {reviewMatches.length ? <div className="review-grid">{reviewMatches.map((photo) => <article className="review-card" key={photo.id}><div className="review-art"><PhotoArt photo={photo} /><span className="face-box" /></div><div className="review-copy"><p className="eyebrow">POSSIBLE MATCH · {Math.round(getConfidence(photo, person.id) * 100)}%</p><h3>Is this {person.name}?</h3><p>Confirming adds it to this person’s results. Rejecting removes the suggestion.</p><div className="review-actions"><button className="primary-button small-button" type="button" disabled={!consented} onClick={() => onReview(photo.id, 'confirmed')}>Yes, it’s me</button><button className="secondary-button" type="button" disabled={!consented} onClick={() => onReview(photo.id, 'rejected')}>Not me</button><button className="text-button" type="button" disabled={!consented} onClick={() => onReview(photo.id, 'review')}>Not sure</button></div></div></article>)}</div> : <EmptyState title="You’re all caught up" text="There are no uncertain candidates for this person." />}
+    {consented && <button className="withdraw-button" type="button" onClick={() => onConsentChange(false)}>Withdraw {person.name}’s consent</button>}
   </>
 }
 
